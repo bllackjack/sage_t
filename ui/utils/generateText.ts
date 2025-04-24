@@ -5,8 +5,34 @@ const openai = new OpenAI({
   dangerouslyAllowBrowser: true,
 });
 
-export async function generateText(prompt: string): Promise<string> {
+const THERAPIST_PROMPT = `You are an AI therapist. Your goal is to provide empathetic, supportive, and helpful responses to the user's questions. You should respond in a warm, friendly, and understanding manner, offering advice or listening to the user's concerns without judgment. 
+
+User Query: "{user_query}"
+
+Please respond as though you are a compassionate and knowledgeable therapist, keeping in mind that you are here to help and support the user. Your responses should sound natural, thoughtful, and emotionally intelligent. Focus on helping the user feel heard and understood.`;
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export async function generateText(
+  prompt: string,
+  conversation: Message[]
+): Promise<string> {
   try {
+    // Format conversation history into a single string
+    const conversationHistory = conversation
+      .map(
+        (msg) => `${msg.role === "user" ? "User" : "Therapist"}: ${msg.content}`
+      )
+      .join("\n\n");
+
+    const fullPrompt = `Previous Conversation:\n${conversationHistory}\n\n${THERAPIST_PROMPT.replace(
+      "{user_query}",
+      prompt
+    )}`;
+
     const response = await fetch(
       "https://api-inference.huggingface.co/models/gpt2",
       {
@@ -16,7 +42,7 @@ export async function generateText(prompt: string): Promise<string> {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          inputs: prompt,
+          inputs: fullPrompt,
           parameters: {
             max_new_tokens: 100,
             return_full_text: false,
@@ -38,10 +64,23 @@ export async function generateText(prompt: string): Promise<string> {
   }
 }
 
-export async function testOpenAI() {
+export async function testOpenAI(prompt: string, conversation: Message[]) {
+  console.log(conversation);
   try {
+    const messages = [
+      {
+        role: "system" as const,
+        content:
+          "You are an AI therapist. Your goal is to provide empathetic, supportive, and helpful responses to the user's questions. You should respond in a warm, friendly, and understanding manner, offering advice or listening to the user's concerns without judgment.",
+      },
+      ...conversation.map((msg) => ({
+        role: msg.role,
+        content: msg.content,
+      })),
+    ];
+
     const completion = await openai.chat.completions.create({
-      messages: [{ role: "user", content: "Tell me a joke" }],
+      messages,
       model: "gpt-3.5-turbo",
     });
     return completion.choices[0].message.content;

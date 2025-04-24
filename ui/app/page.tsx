@@ -1,10 +1,15 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { Play, Square, Send, Volume2 } from "lucide-react";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { Play, Square } from "lucide-react";
 import { SpeechToText } from "../utils/speechToText";
 import { TextToSpeech } from "../utils/textToSpeech";
 import { generateText, testOpenAI } from "../utils/generateText";
+
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
 
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
@@ -57,22 +62,83 @@ declare global {
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [transcribedText, setTranscribedText] = useState("");
-  const [llmResponse, setLlmResponse] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [conversation, setConversation] = useState<Message[]>([]);
   const speechToTextRef = useRef<SpeechToText | null>(null);
   const textToSpeechRef = useRef<TextToSpeech | null>(null);
+
+  // Initialize text-to-speech once when component mounts
+  useEffect(() => {
+    textToSpeechRef.current = new TextToSpeech(
+      () => {
+        setIsSpeaking(true);
+        // Stop speech recognition while speaking
+        if (speechToTextRef.current) {
+          speechToTextRef.current.stop();
+          setIsRecording(false);
+        }
+      },
+      () => {
+        setIsSpeaking(false);
+        // Restart speech recognition after speaking
+        if (speechToTextRef.current) {
+          speechToTextRef.current.start();
+          setIsRecording(true);
+        }
+      },
+      (error) => console.error("Text-to-speech error:", error)
+    );
+  }, []);
+
+  const handleTranscript = useCallback(
+    async (text: string) => {
+      setTranscribedText(text);
+      if (text.trim()) {
+        setIsLoading(true);
+        try {
+          const conversationToSend = [
+            { role: "user" as const, content: text },
+            ...conversation,
+          ];
+          const response = await testOpenAI(text, conversationToSend);
+          if (response) {
+            // Add both user message and assistant response at the same time
+            setConversation((prev) => [
+              ...prev,
+              { role: "user", content: text },
+              { role: "assistant", content: response },
+            ]);
+
+            if (textToSpeechRef.current) {
+              textToSpeechRef.current.speak(response);
+            }
+          }
+        } catch (error: unknown) {
+          console.error("Error getting LLM response:", error);
+          const errorMessage: Message = {
+            role: "assistant",
+            content: "Error getting response from LLM. Please try again.",
+          };
+          setConversation((prev) => [...prev, errorMessage]);
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    },
+    [conversation]
+  );
 
   const startRecording = useCallback(() => {
     if (!speechToTextRef.current) {
       speechToTextRef.current = new SpeechToText(
-        (text: string) => setTranscribedText(text),
+        handleTranscript,
         (error: string) => console.error("Speech recognition error:", error)
       );
     }
     speechToTextRef.current.start();
     setIsRecording(true);
-  }, []);
+  }, [handleTranscript]);
 
   const stopRecording = useCallback(() => {
     if (speechToTextRef.current) {
@@ -81,50 +147,16 @@ export default function Home() {
     setIsRecording(false);
   }, []);
 
-  const sendToLLM = useCallback(async () => {
-    if (!transcribedText) return;
-
-    setIsLoading(true);
-    try {
-      const response = await generateText(transcribedText);
-      setLlmResponse(response);
-    } catch (error: unknown) {
-      console.error("Error getting LLM response:", error);
-      setLlmResponse("Error getting response from LLM. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [transcribedText]);
-
-  const speakResponse = useCallback(() => {
-    if (!llmResponse) return;
-
-    if (!textToSpeechRef.current) {
-      textToSpeechRef.current = new TextToSpeech(
-        () => setIsSpeaking(true),
-        () => setIsSpeaking(false),
-        (error) => console.error("Text-to-speech error:", error)
-      );
-    }
-    textToSpeechRef.current.speak(llmResponse);
-  }, [llmResponse]);
-
-  const handleTestOpenAI = useCallback(async () => {
-    try {
-      const response = await testOpenAI();
-      console.log("OpenAI Response:", response);
-    } catch (error) {
-      console.error("OpenAI Error:", error);
-    }
-  }, []);
-
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
       <div className="text-center mb-8">
         {!isRecording ? (
           <button
             onClick={startRecording}
-            className="flex items-center justify-center w-32 h-32 rounded-full bg-green-500 hover:bg-green-600 text-white shadow-lg transition-all duration-200"
+            disabled={isSpeaking}
+            className={`flex items-center justify-center w-32 h-32 rounded-full ${
+              isSpeaking ? "bg-gray-400" : "bg-green-500 hover:bg-green-600"
+            } text-white shadow-lg transition-all duration-200`}
           >
             <Play className="w-16 h-16" />
           </button>
@@ -137,41 +169,57 @@ export default function Home() {
           </button>
         )}
       </div>
-      {transcribedText && (
-        <div className="mt-8 p-4 bg-white rounded-lg shadow-md max-w-2xl w-full">
-          <h2 className="text-lg font-semibold mb-2">Transcribed Text:</h2>
-          <p className="text-gray-700 mb-4">{transcribedText}</p>
-          <button
-            onClick={sendToLLM}
-            disabled={isLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
+
+      {/* Current Speech Section */}
+      {isRecording && !isSpeaking && (
+        <div className="w-full max-w-2xl mb-8 p-4 bg-white rounded-lg shadow-md">
+          <h2 className="text-lg font-semibold mb-2">Currently Speaking:</h2>
+          <p className="text-gray-700">{transcribedText || "Listening..."}</p>
+        </div>
+      )}
+
+      {/* Speaking Indicator */}
+      {isSpeaking && (
+        <div className="w-full max-w-2xl mb-8 p-4 bg-purple-100 rounded-lg shadow-md">
+          <h2 className="text-lg font-semibold mb-2">Assistant Speaking:</h2>
+          <p className="text-gray-700">
+            {conversation[conversation.length - 1]?.content}
+          </p>
+        </div>
+      )}
+
+      {/* Conversation History */}
+      <div className="w-full max-w-2xl space-y-4">
+        {conversation.map((message, index) => (
+          <div
+            key={index}
+            className={`p-4 rounded-lg ${
+              message.role === "user"
+                ? "bg-blue-100 ml-auto"
+                : "bg-gray-100 mr-auto"
+            }`}
           >
-            <Send className="w-4 h-4" />
-            {isLoading ? "Processing..." : "Send to LLM"}
-          </button>
-        </div>
-      )}
-      {llmResponse && (
-        <div className="mt-8 p-4 bg-white rounded-lg shadow-md max-w-2xl w-full">
-          <div className="flex justify-between items-center mb-2">
-            <h2 className="text-lg font-semibold">LLM Response:</h2>
-            <button
-              onClick={speakResponse}
-              disabled={isSpeaking}
-              className="flex items-center gap-2 px-3 py-1 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:opacity-50"
-            >
-              <Volume2 className="w-4 h-4" />
-              {isSpeaking ? "Speaking..." : "Speak"}
-            </button>
+            <p className="text-gray-800">{message.content}</p>
           </div>
-          <p className="text-gray-700">{llmResponse}</p>
-        </div>
-      )}
+        ))}
+      </div>
+
+      {isLoading && <div className="mt-4 text-gray-600">Processing...</div>}
+
+      {/* Debug Button */}
       <button
-        onClick={handleTestOpenAI}
-        className="mt-4 px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors"
+        onClick={() => {
+          console.log("Conversation History:", conversation);
+          console.log("Current State:", {
+            isRecording,
+            isSpeaking,
+            isLoading,
+            transcribedText,
+          });
+        }}
+        className="mt-4 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
       >
-        Test OpenAI
+        Debug Info
       </button>
     </div>
   );

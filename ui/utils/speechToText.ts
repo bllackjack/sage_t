@@ -46,10 +46,14 @@ declare global {
   }
 }
 
+const PAUSE_TIME = 500;
+
 export class SpeechToText {
   private recognition: SpeechRecognition | null = null;
   private onTranscript: (text: string) => void;
   private onError: (error: string) => void;
+  private debounceTimeout: NodeJS.Timeout | null = null;
+  private currentTranscript: string = "";
 
   constructor(
     onTranscript: (text: string) => void,
@@ -57,6 +61,19 @@ export class SpeechToText {
   ) {
     this.onTranscript = onTranscript;
     this.onError = onError;
+  }
+
+  private debouncedTranscript(text: string) {
+    this.currentTranscript = text;
+
+    if (this.debounceTimeout) {
+      clearTimeout(this.debounceTimeout);
+    }
+
+    this.debounceTimeout = setTimeout(() => {
+      this.onTranscript(this.currentTranscript);
+      this.currentTranscript = "";
+    }, PAUSE_TIME);
   }
 
   start() {
@@ -73,7 +90,7 @@ export class SpeechToText {
         const transcript = Array.from(event.results)
           .map((result) => result[0].transcript)
           .join("");
-        this.onTranscript(transcript);
+        this.debouncedTranscript(transcript);
       };
 
       this.recognition.onerror = (event: SpeechRecognitionError) => {
@@ -88,6 +105,9 @@ export class SpeechToText {
   }
 
   stop() {
+    if (this.debounceTimeout) {
+      clearTimeout(this.debounceTimeout);
+    }
     if (this.recognition) {
       this.recognition.stop();
     }
